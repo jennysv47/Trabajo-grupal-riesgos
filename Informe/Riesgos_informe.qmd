@@ -4,6 +4,50 @@ format: typst
 editor: visual
 ---
 
-## Hola
+## Manual de Uso Técnico: Aplicativo de Evaluación de Riesgo Crediticio
 
-algoooooo L
+Autores:
+
+### Introducción
+
+El presente documento describe el funcionamiento del aplicativo web desarrollado en R Shiny para la evaluación de solicitantes de crédito utilizando modelos predictivos de riesgo.
+
+El sistema permite cargar una base de clientes, seleccionar un modelo de clasificación y obtener automáticamente la probabilidad de incumplimiento (Probability of Default ó PD), las tablas performance y métricas de desempeño del modelo.
+
+Adicionalmente, el aplicativo estima la pérdida esperada de la cartera mediante la metodología estándar utilizada en gestión de riesgo de crédito.
+
+### Requisitos Previos y Preparación de Datos
+
+Para que el programa funcione correctamente se necesita que el archivo de entrada (CSV o XLSX) cuente con lo siguiente:
+
+-   Variables Necesarias:
+
+### Descripción de la Interfaz
+
+Poner imagen? explicar cada componente
+
+1)  **Carga de Archivo:** Utilice el panel lateral para seleccionar la base de datos.
+
+2)  **Selección de Modelo:** Elija entre las opciones disponibles, Random Forest, Gradient Boosting Machine (GBM), Regresión Logística y Ensamble (Modelo Combinado GBM + GLM + REDES NEURONALES).
+
+3)  **Configuración del Cutoff:** Establezca el punto de corte de probabilidad para la decisión crediticia.
+
+Un cutoff de 0.5 es estándar, pero se recomienda ajustarlo según la política de riesgo de la entidad (ejm, reducirlo si se desea una postura más conservadora/restrictiva)
+
+4)  **Ejecución:** Al pulsar "Ejecutar Evaluación"
+
+### Resultados Generados
+
+1)  **Resultados por Registro:**
+
+2)  **Tabla Performance:**
+
+3)  **Pérdida Esperada:** Una vez procesados los datos, el aplicativo calcula automáticamente la Pérdida Esperada ($PE$) mediante la fórmula: $$ PE_i = PD_i \times LGD_i \times EXP_i $$
+
+    Donde:
+
+    -   $PD_i$: Probabilidad de Default estimada por el modelo.
+
+    -   $LGD_i$: Pérdida Dado el Incumplimiento (asumida como 1, o según configuración).
+
+    -   $EXP_i$: Representa el saldo adeudado o capital prestado (Exposición al Momento del Incumplimiento)
