@@ -154,20 +154,21 @@ server <- function(input, output, session) {
         return()
         
       } else if (input$modelo_seleccionado == "Gradient Boosting Machine (GBM)") {
-        # =====================================================================
-        # 🚨 INSTRUCCIONES PARA EL COMPAÑERO (GBM INDIVIDUAL) 🚨
-        # =====================================================================
-        # 1. Pega aquí el código de entrenamiento de tu modelo GBM individual.
-        #    Usa 'x_em', 'y_em' y 'mod_em' para el entrenamiento.
-        #
-        # 2. OBLIGATORIO: Tu línea de predicción DEBE llamarse 'predicciones_h2o'
-        #    Ejemplo: predicciones_h2o <- h2o.predict(tu_modelo_gbm, newdata = mod_em)
-        #
-        # 3. Borra las siguientes dos líneas (showNotification y return) una vez 
-        #    que pegues tu código para que el programa continúe.
-        # =====================================================================
-        showNotification("El modelo GBM individual aún no ha sido implementado.", type = "warning")
-        return()
+        my_gbm_ind <- h2o.gbm(x = x_em,
+                              y = y_em,
+                              model_id = "GBM",
+                              training_frame = mod_em,
+                              ntrees = 200,
+                              max_depth = 3,
+                              min_rows = 800,
+                              learn_rate = 0.02,
+                              nfolds = nfolds,
+                              fold_assignment = "Stratified",
+                              keep_cross_validation_predictions = TRUE,
+                              seed = 12345)
+        
+        # OBLIGATORIO: Almacenar la predicción en la variable esperada por el Shiny
+        predicciones_h2o <- h2o.predict(my_gbm_ind, newdata = mod_em)
       }
       
       # --- PROCESAMIENTO GENERAL DE RESULTADOS PARA CUALQUIER MODELO ---
