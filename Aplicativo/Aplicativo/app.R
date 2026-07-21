@@ -76,6 +76,7 @@ server <- function(input, output, session) {
   resultados_base <- reactiveVal(NULL)
   resultados_perf <- reactiveVal(NULL)
   resultados_pe <- reactiveVal(NULL)
+  metricas_negocio <- reactiveVal(NULL) # Nueva variable para las métricas solicitadas
   
   observeEvent(input$ejecutar_evaluacion, {
     req(input$archivo_datos)
@@ -146,15 +147,6 @@ server <- function(input, output, session) {
         # =====================================================================
         # 🚨 INSTRUCCIONES PARA EL COMPAÑERO (REGRESIÓN LOGÍSTICA) 🚨
         # =====================================================================
-        # 1. Pega aquí el código de entrenamiento de tu modelo GLM.
-        #    Usa 'x_em', 'y_em' y 'mod_em' para el entrenamiento.
-        #
-        # 2. OBLIGATORIO: Tu línea de predicción DEBE llamarse 'predicciones_h2o'
-        #    Ejemplo: predicciones_h2o <- h2o.predict(tu_modelo_glm, newdata = mod_em)
-        #
-        # 3. Borra las siguientes dos líneas (showNotification y return) una vez 
-        #    que pegues tu código para que el programa continúe.
-        # =====================================================================
         showNotification("El modelo de Regresión Logística aún no ha sido implementado.", type = "warning")
         return()
         
@@ -172,7 +164,6 @@ server <- function(input, output, session) {
                               keep_cross_validation_predictions = TRUE,
                               seed = 12345)
         
-        # OBLIGATORIO: Almacenar la predicción en la variable esperada por el Shiny
         predicciones_h2o <- h2o.predict(my_gbm_ind, newdata = mod_em)
       }
       
@@ -202,7 +193,34 @@ server <- function(input, output, session) {
         base_resultado$Score <- mod_e2m$Score
         base_resultado$Rango <- mod_e2m$Rango
         
-        # 3. FILTRAR EXACTAMENTE LAS COLUMNAS DESEADAS (Reemplazando SCORE_GENERAL por Perdida_Esperada)
+        # --- CÁLCULO DE MÉTRICAS DE NEGOCIO ---
+        total_clientes <- nrow(base_resultado)
+        
+        # Filtrar aprobados y rechazados
+        aprobados <- base_resultado %>% filter(Clasificacion_Final == "Aprobado")
+        rechazados <- base_resultado %>% filter(Clasificacion_Final == "Rechazado")
+        
+        # Porcentajes
+        pct_aprobados <- (nrow(aprobados) / total_clientes) * 100
+        pct_rechazados <- (nrow(rechazados) / total_clientes) * 100
+        
+        # Montos de exposición
+        monto_aprobados <- sum(aprobados$EXPOSICION, na.rm = TRUE)
+        monto_rechazados <- sum(rechazados$EXPOSICION, na.rm = TRUE)
+        
+        # Provisiones (Pérdida esperada solo de aprobados)
+        provisiones_necesarias <- sum(aprobados$Perdida_Esperada, na.rm = TRUE)
+        
+        # Guardar en variable reactiva
+        metricas_negocio(list(
+          pct_aprobados = pct_aprobados,
+          pct_rechazados = pct_rechazados,
+          monto_aprobados = monto_aprobados,
+          monto_rechazados = monto_rechazados,
+          provisiones_necesarias = provisiones_necesarias
+        ))
+        
+        # 3. FILTRAR EXACTAMENTE LAS COLUMNAS DESEADAS
         columnas_deseadas <- c("IDENTIFICACION", "EXPOSICION", "Probabilidad_Default_PD", 
                                "Clasificacion_Final", "Score", "Rango", "Perdida_Esperada")
         
@@ -254,14 +272,26 @@ server <- function(input, output, session) {
   })
   
   output$texto_pe <- renderText({
-    if (is.null(resultados_pe())) {
+    if (is.null(resultados_pe()) || is.null(metricas_negocio())) {
       return("La columna 'EXPOSICION' no fue encontrada en los datos de entrada o está vacía. No se puede calcular la Pérdida Esperada.")
     } else {
       res <- resultados_pe()$Metricas
-      paste0("Parámetro LGD utilizado: ", input$lgd_input, "\n",
-             "PE Total: $", round(res$PE_Total, 2), 
-             "\nExposición Total: $", round(res$EXP_Total, 2),
-             "\nPE / Exposición: ", round(res$PE_sobre_EXP * 100, 4), "%")
+      mn <- metricas_negocio()
+      
+      paste0(
+        "--- RESUMEN GLOBAL ---\n",
+        "Parámetro LGD utilizado: ", input$lgd_input, "\n",
+        "PE Total Histórica: $", formattable::comma(round(res$PE_Total, 2)), "\n",
+        "Exposición Total Histórica: $", formattable::comma(round(res$EXP_Total, 2)), "\n",
+        "PE / Exposición: ", round(res$PE_sobre_EXP * 100, 4), "%\n\n",
+        
+        "--- MÉTRICAS DE NEGOCIO (Aplicando Cutoff: ", input$cutoff, ") ---\n",
+        "Clientes Aprobados: ", round(mn$pct_aprobados, 2), "%\n",
+        "Clientes Rechazados: ", round(mn$pct_rechazados, 2), "%\n",
+        "Monto Total Aprobado (Exposición): $", formattable::comma(round(mn$monto_aprobados, 2)), "\n",
+        "Monto Total Rechazado (Exposición): $", formattable::comma(round(mn$monto_rechazados, 2)), "\n",
+        "Provisiones Necesarias (PE de Aprobados): $", formattable::comma(round(mn$provisiones_necesarias, 2))
+      )
     }
   })
   
