@@ -38,7 +38,10 @@ ui <- fluidPage(
                               "Gradient Boosting Machine (GBM)", 
                               "Ensamble (Modelo Combinado)")),
       
+      # Parámetros del modelo
+      tags$h4("Parámetros de Evaluación"),
       numericInput("cutoff", "Cutoff Óptimo (Probabilidad):", value = 0.5, min = 0.01, max = 0.99, step = 0.01),
+      numericInput("lgd_input", "Loss Given Default (LGD):", value = 1, min = 0.01, max = 1, step = 0.01),
       
       actionButton("ejecutar_evaluacion", "Ejecutar Evaluación", class = "btn-primary", width = "100%"),
       
@@ -174,32 +177,34 @@ server <- function(input, output, session) {
       }
       
       # --- PROCESAMIENTO GENERAL DE RESULTADOS PARA CUALQUIER MODELO ---
-      # Si el compañero llenó correctamente predicciones_h2o, este bloque procesará todo automáticamente
       if (!is.null(predicciones_h2o)) {
         
         df_pred <- as.data.frame(predicciones_h2o)
         
-        # 1. Base a nivel de registro (Probabilidad y Aprobación/Rechazo)
+        # 1. Base a nivel de registro
         base_resultado <- copy(datos_originales)
         
-        # Aseguramos que SCORE_GENERAL y EXPOSICION existan antes de seleccionarlas, si no, creamos variables vacías
-        if (!"SCORE_GENERAL" %in% names(base_resultado)) base_resultado$SCORE_GENERAL <- NA
+        # Aseguramos que EXPOSICION e IDENTIFICACION existan
         if (!"EXPOSICION" %in% names(base_resultado)) base_resultado$EXPOSICION <- NA
+        if (!"IDENTIFICACION" %in% names(base_resultado)) base_resultado$IDENTIFICACION <- NA
         
+        # Probabilidad y Clasificación
         base_resultado$Probabilidad_Default_PD <- round(df_pred$p1, 4)
         base_resultado$Clasificacion_Final <- ifelse(base_resultado$Probabilidad_Default_PD > input$cutoff, "Rechazado", "Aprobado")
         
-        # 2. Generación del Score y Rango con la función res_fun de "funciones_auxiliares.R"
+        # Calculo de Pérdida Esperada por cliente: PD * LGD * EXPOSICION
+        base_resultado$Perdida_Esperada <- base_resultado$Probabilidad_Default_PD * input$lgd_input * base_resultado$EXPOSICION
+        
+        # 2. Generación del Score y Rango con la función res_fun
         mod_e2m <- setDT(res_fun(datos, df_pred))
         colnames(mod_e2m)[1] <- "Var"
         
-        # Integrar Score y Rango a la base de salida
         base_resultado$Score <- mod_e2m$Score
         base_resultado$Rango <- mod_e2m$Rango
         
-        # FILTRAR COLUMNAS PARA MOSTRAR Y DESCARGAR
-        columnas_deseadas <- c("IDENTIFICACION", "SCORE_GENERAL", "EXPOSICION", "Probabilidad_Default_PD", 
-                               "Clasificacion_Final", "Score", "Rango", vars)
+        # 3. FILTRAR EXACTAMENTE LAS COLUMNAS DESEADAS (Reemplazando SCORE_GENERAL por Perdida_Esperada)
+        columnas_deseadas <- c("IDENTIFICACION", "EXPOSICION", "Probabilidad_Default_PD", 
+                               "Clasificacion_Final", "Score", "Rango", "Perdida_Esperada")
         
         # Nos aseguramos de mantener solo las columnas que realmente existen en el dataframe
         columnas_existentes <- intersect(columnas_deseadas, names(base_resultado))
@@ -209,10 +214,10 @@ server <- function(input, output, session) {
         tabla_mod_e2m <- tabla_performance(mod_e2m)
         tabla_perf_final <- tabla_mod_e2m[[1]]
         
-        # 3. Cálculo de Pérdida Esperada (Requiere que los datos originales tengan 'EXPOSICION')
+        # 4. Cálculo de Pérdida Esperada Global (Usando el LGD del input)
         if ("EXPOSICION" %in% colnames(datos) && any(!is.na(datos$EXPOSICION))) {
           pe_s <- data.table(Var = mod_e2m$Var, Score = mod_e2m$Score, EXP = datos$EXPOSICION)
-          r_s <- calcular_perdida_esperada(pe_s, LGD = 1)
+          r_s <- calcular_perdida_esperada(pe_s, LGD = input$lgd_input)
           resultados_pe(r_s)
         } else {
           resultados_pe(NULL) # Si no hay exposición, se queda nulo
@@ -235,7 +240,12 @@ server <- function(input, output, session) {
   # --- RENDERIZADO DE TABLAS EN LA UI ---
   output$tabla_resultados <- DT::renderDataTable({
     req(resultados_base())
-    DT::datatable(resultados_base(), options = list(pageLength = 10, scrollX = TRUE))
+    # Formateamos Perdida_Esperada para que se vea bien en la tabla si es numérica
+    dt_data <- resultados_base()
+    if("Perdida_Esperada" %in% colnames(dt_data)) {
+      dt_data$Perdida_Esperada <- round(dt_data$Perdida_Esperada, 2)
+    }
+    DT::datatable(dt_data, options = list(pageLength = 10, scrollX = TRUE))
   })
   
   output$tabla_performance_ui <- DT::renderDataTable({
@@ -248,7 +258,8 @@ server <- function(input, output, session) {
       return("La columna 'EXPOSICION' no fue encontrada en los datos de entrada o está vacía. No se puede calcular la Pérdida Esperada.")
     } else {
       res <- resultados_pe()$Metricas
-      paste0("PE Total: $", round(res$PE_Total, 2), 
+      paste0("Parámetro LGD utilizado: ", input$lgd_input, "\n",
+             "PE Total: $", round(res$PE_Total, 2), 
              "\nExposición Total: $", round(res$EXP_Total, 2),
              "\nPE / Exposición: ", round(res$PE_sobre_EXP * 100, 4), "%")
     }
