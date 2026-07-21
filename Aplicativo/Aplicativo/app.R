@@ -24,7 +24,7 @@ h2o.init(ip = "localhost", nthreads = -1, max_mem_size = "4G")
 # 1. UI (INTERFAZ DE USUARIO)
 # ==============================================================================
 ui <- fluidPage(
-  titlePanel("Módulo 1: Evaluación Masiva (Batch Processing)"),
+  titlePanel("Evaluación de Credit Scoring"),
   
   sidebarLayout(
     sidebarPanel(
@@ -60,7 +60,8 @@ ui <- fluidPage(
                  DT::dataTableOutput("tabla_performance_ui")),
         tabPanel("Pérdida Esperada (PE)", 
                  br(),
-                 verbatimTextOutput("texto_pe"),
+                 uiOutput("panel_metricas_ui"),
+                 br(),
                  DT::dataTableOutput("tabla_pe"))
       )
     )
@@ -76,7 +77,7 @@ server <- function(input, output, session) {
   resultados_base <- reactiveVal(NULL)
   resultados_perf <- reactiveVal(NULL)
   resultados_pe <- reactiveVal(NULL)
-  metricas_negocio <- reactiveVal(NULL) # Nueva variable para las métricas solicitadas
+  metricas_negocio <- reactiveVal(NULL)
   
   observeEvent(input$ejecutar_evaluacion, {
     req(input$archivo_datos)
@@ -96,7 +97,6 @@ server <- function(input, output, session) {
       datos <- copy(datos_originales)
       
       # --- TRANSFORMACIONES PREVIAS ---
-      # Estas funciones deben estar dentro de "funciones_auxiliares.R"
       datos <- fun_acum(datos)
       datos <- fun_ratios(datos)
       datos <- fun_comb(datos)
@@ -120,7 +120,6 @@ server <- function(input, output, session) {
         my_rf <- h2o.randomForest(x = x_em, y = y_em, model_id = "RF", training_frame = mod_em,
                                   ntrees = 200, min_rows = 800, mtries = 3, nfolds = nfolds,
                                   fold_assignment = "Stratified", keep_cross_validation_predictions = TRUE, seed = 12345)
-        
         predicciones_h2o <- h2o.predict(my_rf, newdata = mod_em)
         
       } else if (input$modelo_seleccionado == "Ensamble (Modelo Combinado)") {
@@ -140,53 +139,31 @@ server <- function(input, output, session) {
         
         my_ensemble <- h2o.stackedEnsemble(x = x_em, y = y_em, training_frame = mod_em, model_id = "Ensamble_Tridente",
                                            base_models = list(my_glm, my_gbm, my_nn), metalearner_algorithm = "glm" )
-        
         predicciones_h2o <- h2o.predict(my_ensemble, newdata = mod_em)
         
       } else if (input$modelo_seleccionado == "Regresión Logística") {
-        # =====================================================================
-        # 🚨 INSTRUCCIONES PARA EL COMPAÑERO (REGRESIÓN LOGÍSTICA) 🚨
-        # =====================================================================
         showNotification("El modelo de Regresión Logística aún no ha sido implementado.", type = "warning")
         return()
-        
       } else if (input$modelo_seleccionado == "Gradient Boosting Machine (GBM)") {
-        my_gbm_ind <- h2o.gbm(x = x_em,
-                              y = y_em,
-                              model_id = "GBM",
-                              training_frame = mod_em,
-                              ntrees = 200,
-                              max_depth = 3,
-                              min_rows = 800,
-                              learn_rate = 0.02,
-                              nfolds = nfolds,
-                              fold_assignment = "Stratified",
-                              keep_cross_validation_predictions = TRUE,
-                              seed = 12345)
-        
+        my_gbm_ind <- h2o.gbm(x = x_em, y = y_em, model_id = "GBM", training_frame = mod_em,
+                              ntrees = 200, max_depth = 3, min_rows = 800, learn_rate = 0.02, nfolds = nfolds,
+                              fold_assignment = "Stratified", keep_cross_validation_predictions = TRUE, seed = 12345)
         predicciones_h2o <- h2o.predict(my_gbm_ind, newdata = mod_em)
       }
       
-      # --- PROCESAMIENTO GENERAL DE RESULTADOS PARA CUALQUIER MODELO ---
+      # --- PROCESAMIENTO GENERAL DE RESULTADOS ---
       if (!is.null(predicciones_h2o)) {
         
         df_pred <- as.data.frame(predicciones_h2o)
-        
-        # 1. Base a nivel de registro
         base_resultado <- copy(datos_originales)
         
-        # Aseguramos que EXPOSICION e IDENTIFICACION existan
         if (!"EXPOSICION" %in% names(base_resultado)) base_resultado$EXPOSICION <- NA
         if (!"IDENTIFICACION" %in% names(base_resultado)) base_resultado$IDENTIFICACION <- NA
         
-        # Probabilidad y Clasificación
         base_resultado$Probabilidad_Default_PD <- round(df_pred$p1, 4)
-        base_resultado$Clasificacion_Final <- ifelse(base_resultado$Probabilidad_Default_PD > input$cutoff, "Rechazado", "Aprobado")
-        
-        # Calculo de Pérdida Esperada por cliente: PD * LGD * EXPOSICION
+        base_resultado$Clasificacion_Final <- ifelse(base_resultado$Probabilidad_Default_PD > input$cutoff, "Aprobado", "Rechazado")
         base_resultado$Perdida_Esperada <- base_resultado$Probabilidad_Default_PD * input$lgd_input * base_resultado$EXPOSICION
         
-        # 2. Generación del Score y Rango con la función res_fun
         mod_e2m <- setDT(res_fun(datos, df_pred))
         colnames(mod_e2m)[1] <- "Var"
         
@@ -195,23 +172,17 @@ server <- function(input, output, session) {
         
         # --- CÁLCULO DE MÉTRICAS DE NEGOCIO ---
         total_clientes <- nrow(base_resultado)
-        
-        # Filtrar aprobados y rechazados
         aprobados <- base_resultado %>% filter(Clasificacion_Final == "Aprobado")
         rechazados <- base_resultado %>% filter(Clasificacion_Final == "Rechazado")
         
-        # Porcentajes
         pct_aprobados <- (nrow(aprobados) / total_clientes) * 100
         pct_rechazados <- (nrow(rechazados) / total_clientes) * 100
         
-        # Montos de exposición
         monto_aprobados <- sum(aprobados$EXPOSICION, na.rm = TRUE)
         monto_rechazados <- sum(rechazados$EXPOSICION, na.rm = TRUE)
         
-        # Provisiones (Pérdida esperada solo de aprobados)
         provisiones_necesarias <- sum(aprobados$Perdida_Esperada, na.rm = TRUE)
         
-        # Guardar en variable reactiva
         metricas_negocio(list(
           pct_aprobados = pct_aprobados,
           pct_rechazados = pct_rechazados,
@@ -220,11 +191,9 @@ server <- function(input, output, session) {
           provisiones_necesarias = provisiones_necesarias
         ))
         
-        # 3. FILTRAR EXACTAMENTE LAS COLUMNAS DESEADAS
+        # 3. FILTRAR COLUMNAS
         columnas_deseadas <- c("IDENTIFICACION", "EXPOSICION", "Probabilidad_Default_PD", 
                                "Clasificacion_Final", "Score", "Rango", "Perdida_Esperada")
-        
-        # Nos aseguramos de mantener solo las columnas que realmente existen en el dataframe
         columnas_existentes <- intersect(columnas_deseadas, names(base_resultado))
         base_resultado_filtrada <- base_resultado[, columnas_existentes, drop = FALSE]
         
@@ -232,19 +201,17 @@ server <- function(input, output, session) {
         tabla_mod_e2m <- tabla_performance(mod_e2m)
         tabla_perf_final <- tabla_mod_e2m[[1]]
         
-        # 4. Cálculo de Pérdida Esperada Global (Usando el LGD del input)
+        # 4. Cálculo de Pérdida Esperada Global
         if ("EXPOSICION" %in% colnames(datos) && any(!is.na(datos$EXPOSICION))) {
           pe_s <- data.table(Var = mod_e2m$Var, Score = mod_e2m$Score, EXP = datos$EXPOSICION)
           r_s <- calcular_perdida_esperada(pe_s, LGD = input$lgd_input)
           resultados_pe(r_s)
         } else {
-          resultados_pe(NULL) # Si no hay exposición, se queda nulo
+          resultados_pe(NULL)
         }
         
-        # Guardar en variables reactivas para mostrarlas en la UI y descargarlas
         resultados_base(base_resultado_filtrada)
         resultados_perf(tabla_perf_final)
-        
         showNotification("Evaluación completada con éxito.", type = "message")
       }
       
@@ -258,41 +225,125 @@ server <- function(input, output, session) {
   # --- RENDERIZADO DE TABLAS EN LA UI ---
   output$tabla_resultados <- DT::renderDataTable({
     req(resultados_base())
-    # Formateamos Perdida_Esperada para que se vea bien en la tabla si es numérica
     dt_data <- resultados_base()
+    
+    # Format Perdida_Esperada and EXPOSICION
     if("Perdida_Esperada" %in% colnames(dt_data)) {
       dt_data$Perdida_Esperada <- round(dt_data$Perdida_Esperada, 2)
     }
+    if("EXPOSICION" %in% colnames(dt_data)) {
+      dt_data$EXPOSICION <- round(as.numeric(dt_data$EXPOSICION), 4)
+    }
+    
     DT::datatable(dt_data, options = list(pageLength = 10, scrollX = TRUE))
   })
   
+  # --- TABLA PERFORMANCE ACTUALIZADA (NUEVO SEMÁFORO VERDE-AMARILLO-ROJO) ---
   output$tabla_performance_ui <- DT::renderDataTable({
     req(resultados_perf())
-    DT::datatable(resultados_perf(), options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+    dt_perf <- as.data.frame(resultados_perf())
+    
+    # Redondear todas las columnas numéricas a 4 decimales
+    cols_num <- sapply(dt_perf, is.numeric)
+    dt_perf[cols_num] <- lapply(dt_perf[cols_num], round, 4)
+    
+    # Aseguramos que RazonMalo se convierta a número real para que styleInterval funcione
+    dt_perf$RazonMalo_Num <- as.numeric(gsub("%", "", as.character(dt_perf$RazonMalo))) / 100
+    
+    # Índice de la última columna agregada (RazonMalo_Num) para ocultarla.
+    hidden_col_idx <- ncol(dt_perf) - 1 
+    
+    DT::datatable(dt_perf, 
+                  options = list(
+                    pageLength = 10, 
+                    scrollX = TRUE,
+                    # Ocultar visualmente la columna RazonMalo_Num
+                    columnDefs = list(list(visible = FALSE, targets = hidden_col_idx)) 
+                  ), 
+                  rownames = FALSE) %>%
+      DT::formatStyle(
+        'RazonMalo', # Aplicar estilo a la columna visible
+        valueColumns = 'RazonMalo_Num', # Usar los valores de la columna oculta
+        backgroundColor = DT::styleInterval(
+          c(0.10, 0.40), # Puntos de corte ajustados para verde-amarillo-rojo
+          c('#c8e6c9', '#fff9c4', '#ef9a9a') # Colores: Verde claro, Amarillo claro, Rojo claro
+        )
+      )
   })
   
-  output$texto_pe <- renderText({
+  # --- RENDERIZADO UI DE MÉTRICAS (HTML ESTILIZADO) ---
+  output$panel_metricas_ui <- renderUI({
     if (is.null(resultados_pe()) || is.null(metricas_negocio())) {
-      return("La columna 'EXPOSICION' no fue encontrada en los datos de entrada o está vacía. No se puede calcular la Pérdida Esperada.")
-    } else {
-      res <- resultados_pe()$Metricas
-      mn <- metricas_negocio()
+      return(HTML("<div class='alert alert-warning'>La columna 'EXPOSICION' no fue encontrada en los datos de entrada o está vacía. No se puede calcular la Pérdida Esperada ni las métricas de negocio.</div>"))
+    } 
+    
+    res <- resultados_pe()$Metricas
+    mn <- metricas_negocio()
+    
+    HTML(paste0("
+      <style>
+        .metric-card { background-color: #f8f9fa; border-left: 5px solid #007bff; border-radius: 5px; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .metric-card.resumen { border-color: #17a2b8; }
+        .metric-card.aprobados { border-color: #28a745; }
+        .metric-card.rechazados { border-color: #dc3545; }
+        .metric-card.provisiones { border-color: #ffc107; background-color: #fffdf5; }
+        .metric-title { font-weight: bold; color: #495057; font-size: 1.1em; margin-bottom: 5px; }
+        .metric-value { font-size: 1.4em; color: #212529; font-weight: 600; }
+        .metric-sub { font-size: 0.9em; color: #6c757d; }
+      </style>
       
-      paste0(
-        "--- RESUMEN GLOBAL ---\n",
-        "Parámetro LGD utilizado: ", input$lgd_input, "\n",
-        "PE Total Histórica: $", formattable::comma(round(res$PE_Total, 2)), "\n",
-        "Exposición Total Histórica: $", formattable::comma(round(res$EXP_Total, 2)), "\n",
-        "PE / Exposición: ", round(res$PE_sobre_EXP * 100, 4), "%\n\n",
-        
-        "--- MÉTRICAS DE NEGOCIO (Aplicando Cutoff: ", input$cutoff, ") ---\n",
-        "Clientes Aprobados: ", round(mn$pct_aprobados, 2), "%\n",
-        "Clientes Rechazados: ", round(mn$pct_rechazados, 2), "%\n",
-        "Monto Total Aprobado (Exposición): $", formattable::comma(round(mn$monto_aprobados, 2)), "\n",
-        "Monto Total Rechazado (Exposición): $", formattable::comma(round(mn$monto_rechazados, 2)), "\n",
-        "Provisiones Necesarias (PE de Aprobados): $", formattable::comma(round(mn$provisiones_necesarias, 2))
-      )
-    }
+      <div class='row'>
+        <div class='col-sm-12'>
+          <h4 style='color: #333; border-bottom: 1px solid #ddd; padding-bottom: 5px;'>Resumen Global Histórico</h4>
+        </div>
+        <div class='col-sm-4'>
+          <div class='metric-card resumen'>
+            <div class='metric-title'>Pérdida Esperada Total</div>
+            <div class='metric-value'>$", formattable::comma(round(res$PE_Total, 2)), "</div>
+            <div class='metric-sub'>LGD = ", input$lgd_input, "</div>
+          </div>
+        </div>
+        <div class='col-sm-4'>
+          <div class='metric-card resumen'>
+            <div class='metric-title'>Exposición Total</div>
+            <div class='metric-value'>$", formattable::comma(round(res$EXP_Total, 2)), "</div>
+          </div>
+        </div>
+        <div class='col-sm-4'>
+          <div class='metric-card resumen'>
+            <div class='metric-title'>Ratio PE / Exposición</div>
+            <div class='metric-value'>", round(res$PE_sobre_EXP * 100, 4), "%</div>
+          </div>
+        </div>
+      </div>
+      
+      <div class='row' style='margin-top: 15px;'>
+        <div class='col-sm-12'>
+          <h4 style='color: #333; border-bottom: 1px solid #ddd; padding-bottom: 5px;'>Métricas de Negocio (Cutoff: ", input$cutoff, ")</h4>
+        </div>
+        <div class='col-sm-6'>
+          <div class='metric-card aprobados'>
+            <div class='metric-title'>Aprobados (", round(mn$pct_aprobados, 2), "%)</div>
+            <div class='metric-value'>$", formattable::comma(round(mn$monto_aprobados, 2)), "</div>
+            <div class='metric-sub'>Exposición Aprobada</div>
+          </div>
+        </div>
+        <div class='col-sm-6'>
+          <div class='metric-card rechazados'>
+            <div class='metric-title'>Rechazados (", round(mn$pct_rechazados, 2), "%)</div>
+            <div class='metric-value'>$", formattable::comma(round(mn$monto_rechazados, 2)), "</div>
+            <div class='metric-sub'>Exposición Rechazada</div>
+          </div>
+        </div>
+        <div class='col-sm-12'>
+          <div class='metric-card provisiones'>
+            <div class='metric-title'>Provisiones Necesarias</div>
+            <div class='metric-value'>$", formattable::comma(round(mn$provisiones_necesarias, 2)), "</div>
+            <div class='metric-sub'>Pérdida Esperada generada únicamente por los créditos Aprobados</div>
+          </div>
+        </div>
+      </div>
+    "))
   })
   
   output$tabla_pe <- DT::renderDataTable({
@@ -311,7 +362,6 @@ server <- function(input, output, session) {
         "Performance" = resultados_perf()
       )
       
-      # Agregar la hoja de Pérdida Esperada solo si se pudo calcular
       if (!is.null(resultados_pe())) {
         hojas[["Perdida_Esperada"]] <- resultados_pe()$PE_por_Rango
       }
