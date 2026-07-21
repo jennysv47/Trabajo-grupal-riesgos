@@ -9,11 +9,13 @@ library(expss)
 library(ranger)
 library(h2o)
 library(formattable)
+
 # devtools::install_github("duhi23/Funciones-Auxiliares") # Descomentar si no está instalada
 library(FunAuxiliares)
 
 # Carga de funciones auxiliares propias (AQUÍ YA ESTÁN INCLUIDAS TUS FUNCIONES)
 source("funciones_auxiliares.R")
+options(shiny.maxRequestSize = 500 * 1024^2)
 
 # Inicializar H2O localmente
 h2o.init(ip = "localhost", nthreads = -1, max_mem_size = "4G")
@@ -179,6 +181,11 @@ server <- function(input, output, session) {
         
         # 1. Base a nivel de registro (Probabilidad y Aprobación/Rechazo)
         base_resultado <- copy(datos_originales)
+        
+        # Aseguramos que SCORE_GENERAL y EXPOSICION existan antes de seleccionarlas, si no, creamos variables vacías
+        if (!"SCORE_GENERAL" %in% names(base_resultado)) base_resultado$SCORE_GENERAL <- NA
+        if (!"EXPOSICION" %in% names(base_resultado)) base_resultado$EXPOSICION <- NA
+        
         base_resultado$Probabilidad_Default_PD <- round(df_pred$p1, 4)
         base_resultado$Clasificacion_Final <- ifelse(base_resultado$Probabilidad_Default_PD > input$cutoff, "Rechazado", "Aprobado")
         
@@ -190,12 +197,20 @@ server <- function(input, output, session) {
         base_resultado$Score <- mod_e2m$Score
         base_resultado$Rango <- mod_e2m$Rango
         
+        # FILTRAR COLUMNAS PARA MOSTRAR Y DESCARGAR
+        columnas_deseadas <- c("IDENTIFICACION", "SCORE_GENERAL", "EXPOSICION", "Probabilidad_Default_PD", 
+                               "Clasificacion_Final", "Score", "Rango", vars)
+        
+        # Nos aseguramos de mantener solo las columnas que realmente existen en el dataframe
+        columnas_existentes <- intersect(columnas_deseadas, names(base_resultado))
+        base_resultado_filtrada <- base_resultado[, columnas_existentes, drop = FALSE]
+        
         # Generar tabla performance
         tabla_mod_e2m <- tabla_performance(mod_e2m)
         tabla_perf_final <- tabla_mod_e2m[[1]]
         
         # 3. Cálculo de Pérdida Esperada (Requiere que los datos originales tengan 'EXPOSICION')
-        if ("EXPOSICION" %in% colnames(datos)) {
+        if ("EXPOSICION" %in% colnames(datos) && any(!is.na(datos$EXPOSICION))) {
           pe_s <- data.table(Var = mod_e2m$Var, Score = mod_e2m$Score, EXP = datos$EXPOSICION)
           r_s <- calcular_perdida_esperada(pe_s, LGD = 1)
           resultados_pe(r_s)
@@ -204,7 +219,7 @@ server <- function(input, output, session) {
         }
         
         # Guardar en variables reactivas para mostrarlas en la UI y descargarlas
-        resultados_base(base_resultado)
+        resultados_base(base_resultado_filtrada)
         resultados_perf(tabla_perf_final)
         
         showNotification("Evaluación completada con éxito.", type = "message")
@@ -230,7 +245,7 @@ server <- function(input, output, session) {
   
   output$texto_pe <- renderText({
     if (is.null(resultados_pe())) {
-      return("La columna 'EXPOSICION' no fue encontrada en los datos de entrada. No se puede calcular la Pérdida Esperada.")
+      return("La columna 'EXPOSICION' no fue encontrada en los datos de entrada o está vacía. No se puede calcular la Pérdida Esperada.")
     } else {
       res <- resultados_pe()$Metricas
       paste0("PE Total: $", round(res$PE_Total, 2), 

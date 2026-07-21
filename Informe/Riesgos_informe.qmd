@@ -20,7 +20,7 @@ Adicionalmente, el aplicativo estima la pérdida esperada de la cartera mediante
 
 Para que el programa funcione correctamente se necesita que el archivo de entrada (CSV o XLSX) cuente con lo siguiente:
 
--   Variables Necesarias:
+- Variables Necesarias:
 
 ### Descripción de la Interfaz
 
@@ -46,8 +46,8 @@ Un cutoff de 0.5 es estándar, pero se recomienda ajustarlo según la política 
 
     Donde:
 
-    -   $PD_i$: Probabilidad de Default estimada por el modelo.
+    - $PD_i$: Probabilidad de Default estimada por el modelo.
 
-    -   $LGD_i$: Pérdida Dado el Incumplimiento (asumida como 1, o según configuración).
+    - $LGD_i$: Pérdida Dado el Incumplimiento (asumida como 1, o según configuración).
 
-    -   $EXP_i$: Representa el saldo adeudado o capital prestado (Exposición al Momento del Incumplimiento)
+    - $EXP_i$: Representa el saldo adeudado o capital prestado (Exposición al Momento del Incumplimiento)
