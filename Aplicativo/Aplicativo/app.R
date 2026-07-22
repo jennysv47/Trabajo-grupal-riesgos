@@ -9,6 +9,7 @@ library(expss)
 library(ranger)
 library(h2o)
 library(formattable)
+library(plotly)
 
 # devtools::install_github("duhi23/Funciones-Auxiliares") # Descomentar si no está instalada
 library(FunAuxiliares)
@@ -62,7 +63,15 @@ ui <- fluidPage(
                  br(),
                  uiOutput("panel_metricas_ui"),
                  br(),
-                 DT::dataTableOutput("tabla_pe"))
+                 DT::dataTableOutput("tabla_pe")),
+        # --- NUEVA PESTAÑA DE GRÁFICOS INTERACTIVOS ---
+        tabPanel("Gráficos Interactivos",
+                 br(),
+                 fluidRow(
+                   # Dividimos la pantalla en dos mitades (6 y 6)
+                   column(6, plotlyOutput("pie_rangos", height = "500px")),
+                   column(6, plotlyOutput("hist_exposicion", height = "500px"))
+                 ))
       )
     )
   )
@@ -86,7 +95,7 @@ server <- function(input, output, session) {
     id_notificacion <- showNotification("Procesando datos y evaluando modelo...", type = "message", duration = NULL)
     
     tryCatch({
-      # --- LECTURA DE DATOS ---
+      message("--- PASO 1: Leyendo datos ---")
       ext <- tools::file_ext(input$archivo_datos$name)
       if (ext == "csv") {
         datos_originales <- read.csv(input$archivo_datos$datapath)
@@ -96,55 +105,134 @@ server <- function(input, output, session) {
       
       datos <- copy(datos_originales)
       
-      # --- TRANSFORMACIONES PREVIAS ---
+      message("--- PASO 2: Ejecutando fun_acum ---")
       datos <- fun_acum(datos)
+      
+      message("--- PASO 3: Ejecutando fun_ratios ---")
       datos <- fun_ratios(datos)
+      
+      message("--- PASO 4: Ejecutando fun_comb ---")
       datos <- fun_comb(datos)
-      
-      # --- DEFINICIÓN DE VARIABLES PARA MODELADO ---
-      vars <- c("VarDepF", "MAX_DVEN_SC_OP_12M", "NENT_VEN_SBS_OP_6M", "r_DEUDA_TOTAL_SCE_12a24M", "NOPE_APERT_SCE_24M",
-                "PROM_VEN_SCE_6M", "MAX_DVEN_SC_OP_3M", "MVAL_CASTIGO_SCE_OP_36M", "PROM_VEN_SBS_24M", "PROM_VEN_SBS_6M",
-                "r_NOPE_VENC_181A360_OP_12s36M")
-      
-      mod_em <- as.h2o(x = setDT(datos)[, vars, with=FALSE])
-      y_em <- "VarDepF"
-      x_em <- setdiff(names(mod_em), y_em)
-      mod_em[[y_em]] <- as.factor(mod_em[[y_em]])
-      nfolds <- 5
       
       # Variable principal donde todos los modelos deben depositar sus predicciones
       predicciones_h2o <- NULL
       
+      message(paste("--- PASO 5: Iniciando modelo seleccionado:", input$modelo_seleccionado, "---"))
+      
+      # --- INICIALIZACIÓN CONDICIONAL PARA MODELOS H2O ---
+      if (input$modelo_seleccionado %in% c("Random Forest", "Gradient Boosting Machine (GBM)", "Ensamble (Modelo Combinado)")) {
+        
+        vars <- c("VarDepF", "MAX_DVEN_SC_OP_12M", "NENT_VEN_SBS_OP_6M", "r_DEUDA_TOTAL_SCE_12a24M", "NOPE_APERT_SCE_24M",
+                  "PROM_VEN_SCE_6M", "MAX_DVEN_SC_OP_3M", "MVAL_CASTIGO_SCE_OP_36M", "PROM_VEN_SBS_24M", "PROM_VEN_SBS_6M",
+                  "r_NOPE_VENC_181A360_OP_12s36M")
+        
+        # Si explota aquí, el CSV no tiene las variables de H2O
+        message("--- PASO 5.1: Creando matriz H2O ---") 
+        mod_em <- as.h2o(x = setDT(datos)[, vars, with=FALSE])
+        y_em <- "VarDepF"
+        x_em <- setdiff(names(mod_em), y_em)
+        mod_em[[y_em]] <- as.factor(mod_em[[y_em]])
+        nfolds <- 5
+      }
+      
       # --- EJECUCIÓN DE MODELOS ---
       if (input$modelo_seleccionado == "Random Forest") {
+        message("--- PASO 6: Corriendo Random Forest ---")
         my_rf <- h2o.randomForest(x = x_em, y = y_em, model_id = "RF", training_frame = mod_em,
                                   ntrees = 200, min_rows = 800, mtries = 3, nfolds = nfolds,
                                   fold_assignment = "Stratified", keep_cross_validation_predictions = TRUE, seed = 12345)
         predicciones_h2o <- h2o.predict(my_rf, newdata = mod_em)
         
-      } else if (input$modelo_seleccionado == "Ensamble (Modelo Combinado)") {
-        my_gbm <- h2o.gbm(x = x_em, y = y_em, model_id = "GBM", training_frame = mod_em, distribution = "bernoulli",
-                          ntrees = 300, max_depth = 6, min_rows = 500, learn_rate = 0.02, nfolds = nfolds,
-                          fold_assignment = "Stratified", keep_cross_validation_predictions = TRUE, seed = 12345)
-        
-        my_glm <- h2o.glm(x = x_em, y = y_em, model_id = "GLM", training_frame = mod_em, alpha = 0.1,
-                          remove_collinear_columns = TRUE, nfolds = nfolds, fold_assignment = "Stratified",
-                          keep_cross_validation_predictions = TRUE, seed = 12345)
-        
-        my_nn <- h2o.deeplearning(x = x_em, y = y_em, model_id = "NeuralNetwork_CreditScoring", training_frame = mod_em, 
-                                  distribution = "bernoulli", hidden = c(32, 16), activation = "RectifierWithDropout", 
-                                  epochs = 50, train_samples_per_iteration = -1, l1 = 1e-5, l2 = 1e-5, 
-                                  input_dropout_ratio = 0.1, hidden_dropout_ratios = c(0.2, 0.2), nfolds = nfolds,
-                                  fold_assignment = "Stratified", keep_cross_validation_predictions = TRUE, seed = 12345)
-        
-        my_ensemble <- h2o.stackedEnsemble(x = x_em, y = y_em, training_frame = mod_em, model_id = "Ensamble_Tridente",
-                                           base_models = list(my_glm, my_gbm, my_nn), metalearner_algorithm = "glm" )
-        predicciones_h2o <- h2o.predict(my_ensemble, newdata = mod_em)
-        
       } else if (input$modelo_seleccionado == "Regresión Logística") {
-        showNotification("El modelo de Regresión Logística aún no ha sido implementado.", type = "warning")
-        return()
+        message("--- PASO 6: Corriendo Regresión Logística ---")
+        
+        setDT(datos)
+        
+        # Transformación Logarítmica
+        datos[, ln_CUOTA_EST_OP      := log(CUOTA_EST_OP + 1)]
+        datos[, ln_EXPOSICION        := log(EXPOSICION + 1)]
+        
+        datos[, prbm_NOPE_VENC_OP_3M := fcase(
+          NOPE_VENC_OP_3M <= 0,        0.15431,   # Nodo 8: Sin operaciones vencidas recientes (Perfil Sano)
+          NOPE_VENC_OP_3M > 0,         0.68425,   # Nodo 9: Con al menos una operación vencida (Alto Riesgo)
+          
+          default = 0.39384                       # Media global de esta muestra (Nodo 0)
+        )]
+        
+        datos[, prbm_ANTIGUEDAD_OP_SBS := fcase(
+          ANTIGUEDAD_OP_SBS <= 0,                                   0.47179,  # Nodo 173: Sin antigüedad registrada (Perfil "Thin File" / Mayor riesgo)
+          ANTIGUEDAD_OP_SBS > 0    & ANTIGUEDAD_OP_SBS <= 26.9,   0.34938,  # Nodo 174: Antigüedad incipiente (Menos de 2 años en el sistema)
+          ANTIGUEDAD_OP_SBS > 26.9  & ANTIGUEDAD_OP_SBS <= 63.4,   0.33090,  # Nodo 175: Antigüedad intermedia (De 2 a 5 años de historial)
+          ANTIGUEDAD_OP_SBS > 63.4  & ANTIGUEDAD_OP_SBS <= 79.2,   0.30889,  # Nodo 176: Antigüedad madura (De 5 a 6.5 años de estabilidad)
+          ANTIGUEDAD_OP_SBS > 79.2,                                      0.25180,  # Nodo 177: Clientes bancarizados de larga data (Riesgo mínimo)
+          
+          default = 0.39384                                                           # Media global de esta muestra (Nodo 0)
+        )]
+        
+        datos[, prbm_r_NOPE_VENC_OP_6s12M := fcase(
+          r_NOPE_VENC_OP_6s12M <= 0,                                   0.14591,  # Nodo 59: Sin operaciones vencidas registradas (Perfil Muy Sano)
+          r_NOPE_VENC_OP_6s12M > 0    & r_NOPE_VENC_OP_6s12M <= 0.917,   0.63762,  # Nodo 60: Presencia moderada de morosidad (Riesgo Alto)
+          r_NOPE_VENC_OP_6s12M > 0.917,                                0.67146,  # Nodo 61: Frecuencia crítica de operaciones vencidas (Máximo Riesgo)
+          
+          default = 0.39384                                                     # Media global de esta muestra (Nodo 0)
+        )]
+        
+        
+        datos[, prbm_NENT_VEN_SCE_24M := fcase(
+          NENT_VEN_SCE_24M <= 0,                                  0.10355,  # Nodo 148: Sin entidades con saldo vencido a 24M (Perfil Muy Sano)
+          NENT_VEN_SCE_24M > 0    & NENT_VEN_SCE_24M <= 1,        0.62820,  # Nodo 149: Alerta de incumplimiento con 1 entidad (Pico de riesgo)
+          NENT_VEN_SCE_24M > 1    & NENT_VEN_SCE_24M <= 2,        0.62411,  # Nodo 150: Incumplimiento sostenido con 2 entidades
+          NENT_VEN_SCE_24M > 2    & NENT_VEN_SCE_24M <= 3,        0.53560,  # Nodo 151: Morosidad extendida en múltiples entidades
+          NENT_VEN_SCE_24M > 3,                                   0.34205,  # Nodo 152: Concentración masiva de deudas multi-entidad antiguas
+          
+          default = 0.39384                                                 # Media global de esta muestra (Nodo 0)
+        )]
+        
+        
+        datos[, prbm_PROM_VEN_SCE_12M := fcase(
+          PROM_VEN_SCE_12M <= 0,                                     0.11641,  # Nodo 142: Sin saldo vencido promedio a 12M (Perfil Impecable)
+          PROM_VEN_SCE_12M > 0       & PROM_VEN_SCE_12M <= 20,       0.60281,  # Nodo 143: Alerta temprana de incumplimiento
+          PROM_VEN_SCE_12M > 20      & PROM_VEN_SCE_12M <= 212.25,   0.80356,  # Nodo 144: Saldo vencido promedio activo (Pico de riesgo destructivo)
+          PROM_VEN_SCE_12M > 212.25  & PROM_VEN_SCE_12M <= 627.18,   0.71580,  # Nodo 145: Incumplimiento crítico a mediano plazo
+          PROM_VEN_SCE_12M > 627.18  & PROM_VEN_SCE_12M <= 2093.16,  0.51140,  # Nodo 146: Historial de vencimiento crónico envejecido
+          PROM_VEN_SCE_12M > 2093.16,                                0.23320,  # Nodo 147: Cuentas severamente antiguas (Efecto regularización / recuperación)
+          
+          default = 0.39384                                                    # Media global de esta muestra (Nodo 0)
+        )]
+        
+        
+        datos[, prbm_MAX_DVEN_SCE_12M := fcase(
+          MAX_DVEN_SCE_12M <= 0,                                     0.07069,  # Nodo 167: Sin morosidad en el último año (Excelente perfil)
+          MAX_DVEN_SCE_12M > 0    & MAX_DVEN_SCE_12M <= 26,          0.15908,  # Nodo 168: Mora menor a un mes (Alerta leve)
+          MAX_DVEN_SCE_12M > 26   & MAX_DVEN_SCE_12M <= 165,         0.47040,  # Nodo 169: Mora en desarrollo (Riesgo alto)
+          MAX_DVEN_SCE_12M > 165  & MAX_DVEN_SCE_12M <= 360,         0.75696,  # Nodo 170: Mora crítica activa (Pico de riesgo destructivo)
+          MAX_DVEN_SCE_12M > 360  & MAX_DVEN_SCE_12M <= 720,         0.58869,  # Nodo 171: Cuenta castigada reciente (Entrando a recuperación)
+          MAX_DVEN_SCE_12M > 720  & MAX_DVEN_SCE_12M <= 1358,        0.64962,  # Nodo 172: Morosidad crónica de larga duración
+          MAX_DVEN_SCE_12M > 1358 & MAX_DVEN_SCE_12M <= 2448,        0.52079,  # Nodo 173: Cartera severamente envejecida
+          MAX_DVEN_SCE_12M > 2448,                                   0.48250,  # Nodo 174: Historial prehistórico (Efecto supervivencia/castigo total)
+          
+          default = 0.39384                                                    # Media global de esta muestra (Nodo 0)
+        )]
+        
+        
+        datos[, prbm_TOT_CUPO := fcase(
+          TOT_CUPO <= 0,                               0.48519,  # Nodo 175: Sin cupo asignado (Máximo riesgo / Perfil desbancarizado)
+          TOT_CUPO > 0       & TOT_CUPO <= 1193.49,    0.37116,  # Nodo 176: Cupo bajo / Capacidad limitada
+          TOT_CUPO > 1193.49 & TOT_CUPO <= 3172,       0.26811,  # Nodo 177: Cupo intermedio
+          TOT_CUPO > 3172    & TOT_CUPO <= 8395,       0.20896,  # Nodo 178: Cupo alto / Cliente consolidado
+          TOT_CUPO > 8395,                             0.17716,  # Nodo 179: Cupo preferencial / Clientes Premium (Riesgo mínimo)
+          
+          default = 0.39384                                      # Media global de esta muestra (Nodo 0)
+        )]
+        
+        ### Carga y Ajuste del Modelo ------
+        
+        modelo <- readRDS("modelo_logistico.RDS")
+        datos[, PROB_LOGISTICO := predict(modelo, newdata = datos, type = "response")]
+        predicciones_h2o <- data.frame(p1 = datos$PROB_LOGISTICO)
+        
       } else if (input$modelo_seleccionado == "Gradient Boosting Machine (GBM)") {
+        message("--- PASO 6: Corriendo GBM ---")
         my_gbm_ind <- h2o.gbm(x = x_em, y = y_em, model_id = "GBM", training_frame = mod_em,
                               ntrees = 200, max_depth = 3, min_rows = 800, learn_rate = 0.02, nfolds = nfolds,
                               fold_assignment = "Stratified", keep_cross_validation_predictions = TRUE, seed = 12345)
@@ -153,7 +241,7 @@ server <- function(input, output, session) {
       
       # --- PROCESAMIENTO GENERAL DE RESULTADOS ---
       if (!is.null(predicciones_h2o)) {
-        
+        message("--- PASO 7: Procesando tablas finales (res_fun) ---")
         df_pred <- as.data.frame(predicciones_h2o)
         base_resultado <- copy(datos_originales)
         
@@ -164,11 +252,32 @@ server <- function(input, output, session) {
         base_resultado$Clasificacion_Final <- ifelse(base_resultado$Probabilidad_Default_PD > input$cutoff, "Aprobado", "Rechazado")
         base_resultado$Perdida_Esperada <- base_resultado$Probabilidad_Default_PD * input$lgd_input * base_resultado$EXPOSICION
         
-        mod_e2m <- setDT(res_fun(datos, df_pred))
-        colnames(mod_e2m)[1] <- "Var"
+        Score_calculado <- 1000 - ceiling(1000 * df_pred$p1)
+        
+        # Protegemos la variable objetivo en caso de que subas un archivo de nuevos clientes sin la variable VarDepF
+        Var_real <- if ("VarDepF" %in% names(datos)) datos$VarDepF else rep(NA, nrow(datos))
+        
+        mod_e2m <- data.table(
+          Var = Var_real,
+          Score = Score_calculado
+        )
+        
+        # Función interna para calcular los deciles de forma segura (ignora los NA si los hay)
+        rango_score_seguro <- function(vector, nrangos=10){
+          aux <- seq_along(vector)
+          res <- data.frame(id=aux, val=vector)
+          res <- res[order(res$val, decreasing = TRUE, na.last = TRUE),]
+          res$aux <- as.numeric(cut(aux, breaks = round(seq(0, length(vector), length.out = (nrangos+1)), 0), labels = seq(1, nrangos)))
+          res <- res[order(res$id),]
+          return(res$aux)
+        }
+        
+        mod_e2m[, Rango := rango_score_seguro(Score)]
         
         base_resultado$Score <- mod_e2m$Score
         base_resultado$Rango <- mod_e2m$Rango
+        
+        message("--- PASO 8: Calculando métricas ---")
         
         # --- CÁLCULO DE MÉTRICAS DE NEGOCIO ---
         total_clientes <- nrow(base_resultado)
@@ -192,11 +301,16 @@ server <- function(input, output, session) {
         ))
         
         # 3. FILTRAR COLUMNAS
+        message("--- PASO 9: Filtrando columnas finales ---")
         columnas_deseadas <- c("IDENTIFICACION", "EXPOSICION", "Probabilidad_Default_PD", 
                                "Clasificacion_Final", "Score", "Rango", "Perdida_Esperada")
+        
+        # ⚠️ SOLUCIÓN BLINDADA AL POSIBLE ERROR AQUÍ:
+        base_resultado <- as.data.frame(base_resultado) 
         columnas_existentes <- intersect(columnas_deseadas, names(base_resultado))
         base_resultado_filtrada <- base_resultado[, columnas_existentes, drop = FALSE]
         
+        message("--- PASO 10: Generando tablas Performance ---")
         # Generar tabla performance
         tabla_mod_e2m <- tabla_performance(mod_e2m)
         tabla_perf_final <- tabla_mod_e2m[[1]]
@@ -369,6 +483,96 @@ server <- function(input, output, session) {
       write.xlsx(hojas, file = file, overwrite = TRUE)
     }
   )
+  
+  
+  
+  # ============================================================================
+  # --- GRÁFICOS INTERACTIVOS (PLOTLY) ---
+  # ============================================================================
+  
+  # 1. Gráfico de Pastel Interactivo (Solucionado)
+  output$pie_rangos <- renderPlotly({
+    req(resultados_base(), resultados_perf())
+    
+    df <- as.data.table(resultados_base())
+    dt_perf <- as.data.table(resultados_perf())
+    
+    # 1. Reconstruimos el Rango
+    if (!"Rango" %in% names(dt_perf)) {
+      dt_perf[, Rango := 1:.N]
+    }
+    
+    # 2. 🛡️ Calculamos los Buenos (Total - Malos) ya que tper no los exporta
+    if (!"Bueno" %in% names(dt_perf)) {
+      dt_perf[, Bueno := Total - Malo]
+    }
+    
+    # 3. Calculamos la plata (exposición) agrupada por Rango
+    exp_rango <- df[, .(Exposicion_Total = sum(as.numeric(EXPOSICION), na.rm = TRUE)), by = Rango]
+    
+    # 4. Unimos todo
+    resumen_pie <- merge(dt_perf, exp_rango, by = "Rango", all.x = TRUE)
+    resumen_pie <- resumen_pie[order(Rango)]
+    
+    # 5. Construimos el Hover (El texto al pasar el mouse)
+    resumen_pie[, HoverText := paste0(
+      "<b>Decil (Rango):</b> ", Rango, "<br>",
+      "<b>Total Observaciones:</b> ", formattable::comma(Total, digits = 0), "<br>",
+      "<b>Buenos:</b> ", formattable::comma(Bueno, digits = 0), " | <b>Malos:</b> ", formattable::comma(Malo, digits = 0), "<br>",
+      "<b>Exposición:</b> $", formattable::comma(Exposicion_Total, digits = 2), "<br>",
+      "<b>Rango de Score:</b> ", Min, " - ", Max
+    )]
+    
+    # 6. Dibujamos el pastel
+    plot_ly(resumen_pie, 
+            labels = ~paste("Decil", Rango), 
+            values = ~Total, 
+            type = 'pie',
+            textinfo = 'label+percent',
+            hoverinfo = 'text',
+            text = ~HoverText,
+            customdata = ~Rango, # Vital para que el clic funcione
+            source = "pie_click", 
+            marker = list(line = list(color = '#FFFFFF', width = 1))) %>% 
+      layout(title = "Distribución de Observaciones por Decil",
+             showlegend = TRUE)
+  })
+  
+  # 2. Histograma Dinámico (Despierta con el clic)
+  output$hist_exposicion <- renderPlotly({
+    req(resultados_base())
+    
+    # Capturamos el clic del usuario
+    click_data <- event_data("plotly_click", source = "pie_click")
+    
+    # Si aún no hacen clic, mostramos el mensaje base
+    if (is.null(click_data)) {
+      return(plot_ly() %>% 
+               layout(title = "Haz clic en un decil del pastel<br>para ver la distribución de su exposición",
+                      xaxis = list(visible = FALSE), 
+                      yaxis = list(visible = FALSE)))
+    }
+    
+    # Extraemos el número del decil al que le hicieron clic
+    rango_seleccionado <- click_data$customdata[[1]]
+    
+    # Filtramos la data original
+    df <- as.data.table(resultados_base())
+    df_filtrado <- df[Rango %in% rango_seleccionado]
+    
+    if(nrow(df_filtrado) == 0){
+      return(plot_ly() %>% layout(title = "Sin datos numéricos de exposición para este decil."))
+    }
+    
+    # Dibujamos el histograma de ese decil específico
+    plot_ly(df_filtrado, x = ~as.numeric(EXPOSICION), type = "histogram", 
+            marker = list(color = "#17a2b8", line = list(color = "white", width = 1)),
+            opacity = 0.8) %>%
+      layout(title = paste("Distribución de Exposición - Decil", rango_seleccionado),
+             xaxis = list(title = "Monto de Exposición ($)", tickformat = "$,.0f"),
+             yaxis = list(title = "N° de Observaciones"),
+             bargap = 0.1)
+  })
 }
 
 shinyApp(ui = ui, server = server)
