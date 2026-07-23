@@ -8,6 +8,12 @@
 * Lara Del Salto Daniel Sebastian
 * Simbaña Valencia Jennifer Pamela
 
+### Enlace para Descarga de Datos:
+
+- Versión ligera (5000 Registros): 	https://drive.google.com/file/d/1ees9Fi9Xgqgu8nWdRtnslPjQaqondE5-/view?usp=sharing
+
+- Version estandar (100000 Registros):  https://drive.google.com/file/d/1QcXx5dyJHMRvjVNulwujIG_tQRwFABUH/view?usp=sharing
+
 ## 📖 Introducción
 En el entorno financiero actual, la gestión cuantitativa del riesgo de crédito es un pilar fundamental para garantizar la estabilidad y solvencia de las instituciones. El advenimiento de técnicas avanzadas de *machine learning* ha transformado los enfoques tradicionales, permitiendo modelizar la probabilidad de incumplimiento con un nivel de precisión sin precedentes. Sin embargo, el verdadero valor de estos modelos radica en su operatividad en herramientas de toma de decisiones en tiempo real.
 
